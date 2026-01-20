@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# PyTorch
+*.pth
+*.pt
+checkpoints/
+
+# Data (too large for git)
+data/
+*.tif
+*.tiff
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Outputs (可选，如果想保留可视化结果可以删除这行)
+outputs/

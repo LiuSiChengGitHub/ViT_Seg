@@ -1,0 +1,26 @@
+# 脑部MRI分割项目依赖
+
+# PyTorch (根据CUDA版本可能需要调整)
+torch>=1.12.0
+torchvision>=0.13.0
+
+# 图像处理
+Pillow>=9.0.0
+numpy>=1.21.0
+opencv-python>=4.5.0
+
+# 可视化
+matplotlib>=3.5.0
+
+# 数据增强 (可选，当前版本使用numpy实现)
+# albumentations>=1.2.0
+
+# 进度条
+tqdm>=4.62.0
+
+# 科学计算
+scikit-learn>=1.0.0
+scipy>=1.7.0
+
+# 其他
+pyyaml>=6.0
