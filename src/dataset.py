@@ -264,6 +264,239 @@ def get_dataloaders(
     return train_loader, val_loader
 
 
+class MultiClassBrainMRIDataset(Dataset):
+    """
+    多分类脑部MRI分割数据集
+    
+    用于4类脑肿瘤分割任务（BraTS格式）：
+    - 0: 背景
+    - 1: 肿瘤核心 (Tumor Core)
+    - 2: 强化区域 (Enhancing Tumor)
+    - 3: 水肿区域 (Edema)
+    """
+    
+    def __init__(
+        self,
+        image_dir: str,
+        mask_dir: Optional[str] = None,
+        image_size: Tuple[int, int] = (256, 256),
+        transform: Optional[Callable] = None,
+        augmentation: bool = True,
+        mode: str = 'train',
+        num_classes: int = 4
+    ):
+        """
+        Args:
+            image_dir: 图像目录路径
+            mask_dir: 掩码目录路径（如果为None，假设mask在同一目录）
+            image_size: 输出图像尺寸 (H, W)
+            transform: 自定义变换函数
+            augmentation: 是否进行数据增强
+            mode: 'train' 或 'val'
+            num_classes: 类别数量（默认4类）
+        """
+        self.image_dir = image_dir
+        self.mask_dir = mask_dir
+        self.image_size = image_size
+        self.transform = transform
+        self.augmentation = augmentation and (mode == 'train')
+        self.mode = mode
+        self.num_classes = num_classes
+        
+        # 收集图像路径
+        self.image_paths = []
+        self.mask_paths = []
+        
+        self._load_data_paths()
+        
+        print(f"[{mode.upper()}] 多分类数据集加载了 {len(self.image_paths)} 张图像 ({num_classes}类)")
+    
+    def _load_data_paths(self):
+        """加载数据路径"""
+        # 支持多种图像格式
+        image_extensions = ['*.tif', '*.tiff', '*.png', '*.jpg', '*.jpeg']
+        mask_extensions = ['*.png', '*.tif', '*.tiff']  # PNG保持整数值更好
+        
+        if self.mask_dir is None:
+            # 图像和mask在同一目录
+            all_image_files = []
+            for ext in image_extensions:
+                all_image_files.extend(glob.glob(os.path.join(self.image_dir, '**', ext), recursive=True))
+            
+            # 分离图像和掩码
+            mask_files = set([f for f in all_image_files if '_mask' in os.path.basename(f)])
+            image_files = [f for f in all_image_files if f not in mask_files and '_mask' not in os.path.basename(f)]
+            
+            for img_path in image_files:
+                # 尝试多种mask扩展名
+                base = os.path.splitext(img_path)[0]
+                for mask_ext in ['.png', '.tif', '.tiff']:
+                    mask_path = base + '_mask' + mask_ext
+                    if os.path.exists(mask_path):
+                        self.image_paths.append(img_path)
+                        self.mask_paths.append(mask_path)
+                        break
+    
+    def __len__(self) -> int:
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        # 加载图像
+        image = Image.open(self.image_paths[idx]).convert('RGB')
+        mask = Image.open(self.mask_paths[idx]).convert('L')  # 灰度图保持类别值
+        
+        # Resize到指定尺寸
+        image = image.resize(self.image_size, Image.BILINEAR)
+        mask = mask.resize(self.image_size, Image.NEAREST)  # 最近邻保持类别值
+        
+        # 转换为numpy数组
+        image = np.array(image, dtype=np.float32)
+        mask = np.array(mask, dtype=np.int64)  # 使用int64用于CrossEntropy
+        
+        # 数据增强
+        if self.augmentation:
+            image, mask = self._augment(image, mask)
+        
+        # 归一化图像到 [0, 1]
+        image = image / 255.0
+        
+        # 确保mask值在有效范围内
+        mask = np.clip(mask, 0, self.num_classes - 1)
+        
+        # 自定义变换
+        if self.transform is not None:
+            image, mask = self.transform(image, mask)
+        
+        # 转换为PyTorch张量
+        # 图像: (H, W, C) -> (C, H, W)
+        image = torch.from_numpy(image.transpose(2, 0, 1).copy())
+        # 掩码: (H, W) -> (1, H, W) 保持整数类型
+        mask = torch.from_numpy(mask.copy()).unsqueeze(0).long()
+        
+        return image, mask
+    
+    def _augment(self, image: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """数据增强"""
+        # 随机水平翻转
+        if random.random() > 0.5:
+            image = np.fliplr(image).copy()
+            mask = np.fliplr(mask).copy()
+        
+        # 随机垂直翻转
+        if random.random() > 0.5:
+            image = np.flipud(image).copy()
+            mask = np.flipud(mask).copy()
+        
+        # 随机90度旋转
+        k = random.randint(0, 3)
+        if k > 0:
+            image = np.rot90(image, k).copy()
+            mask = np.rot90(mask, k).copy()
+        
+        # 随机对比度调整 (仅对图像)
+        if random.random() > 0.5:
+            factor = random.uniform(0.8, 1.2)
+            mean = image.mean()
+            image = (image - mean) * factor + mean
+            image = np.clip(image, 0, 255)
+        
+        return image, mask
+
+
+def get_multiclass_dataloaders(
+    data_dir: str,
+    batch_size: int = 8,
+    image_size: Tuple[int, int] = (256, 256),
+    train_ratio: float = 0.7,
+    num_workers: int = 0,
+    seed: int = 42,
+    num_classes: int = 4
+) -> Tuple[DataLoader, DataLoader]:
+    """
+    获取多分类训练和验证数据加载器
+    
+    Args:
+        data_dir: 数据目录
+        batch_size: 批量大小
+        image_size: 图像尺寸
+        train_ratio: 训练集比例 (默认0.7，即7:3划分)
+        num_workers: 数据加载线程数
+        seed: 随机种子
+        num_classes: 类别数量
+    
+    Returns:
+        (train_loader, val_loader)
+    """
+    # 设置随机种子
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    
+    # 创建完整数据集（不带增强，用于划分）
+    full_dataset = MultiClassBrainMRIDataset(
+        image_dir=data_dir,
+        image_size=image_size,
+        augmentation=False,
+        mode='train',
+        num_classes=num_classes
+    )
+    
+    # 划分训练集和验证集
+    total_size = len(full_dataset)
+    train_size = int(total_size * train_ratio)
+    
+    # 获取索引
+    indices = list(range(total_size))
+    random.shuffle(indices)
+    train_indices = indices[:train_size]
+    val_indices = indices[train_size:]
+    
+    # 创建训练数据集（带增强）
+    train_dataset = MultiClassBrainMRIDataset(
+        image_dir=data_dir,
+        image_size=image_size,
+        augmentation=True,
+        mode='train',
+        num_classes=num_classes
+    )
+    
+    # 创建验证数据集（不带增强）
+    val_dataset = MultiClassBrainMRIDataset(
+        image_dir=data_dir,
+        image_size=image_size,
+        augmentation=False,
+        mode='val',
+        num_classes=num_classes
+    )
+    
+    # 使用Subset创建划分后的数据集
+    from torch.utils.data import Subset
+    train_subset = Subset(train_dataset, train_indices)
+    val_subset = Subset(val_dataset, val_indices)
+    
+    # 创建数据加载器
+    train_loader = DataLoader(
+        train_subset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True
+    )
+    
+    val_loader = DataLoader(
+        val_subset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+    
+    print(f"多分类数据集划分: 训练集 {len(train_subset)} 张, 验证集 {len(val_subset)} 张")
+    
+    return train_loader, val_loader
+
+
 # 测试代码
 if __name__ == '__main__':
     # 测试数据集
@@ -289,3 +522,23 @@ if __name__ == '__main__':
     else:
         print(f"数据目录不存在: {data_dir}")
         print("请先下载数据集到该目录")
+    
+    # 测试多分类数据集
+    print("\n测试多分类数据加载器...")
+    multiclass_dir = './data/synthetic_multiclass'
+    
+    if os.path.exists(multiclass_dir):
+        train_loader, val_loader = get_multiclass_dataloaders(
+            data_dir=multiclass_dir,
+            batch_size=4,
+            image_size=(256, 256),
+            num_classes=4
+        )
+        
+        for images, masks in train_loader:
+            print(f"图像批次形状: {images.shape}")
+            print(f"掩码批次形状: {masks.shape}")
+            print(f"掩码数据类型: {masks.dtype}")
+            print(f"掩码唯一值: {torch.unique(masks)}")
+            break
+

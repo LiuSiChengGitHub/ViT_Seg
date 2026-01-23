@@ -26,7 +26,7 @@ from torch.cuda.amp import autocast, GradScaler
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from model import get_model, TransUNetLite
-from dataset import get_dataloaders, BrainMRIDataset
+from dataset import get_dataloaders, get_multiclass_dataloaders, BrainMRIDataset
 from losses import get_loss_function
 from metrics import MetricTracker, dice_score, iou_score
 
@@ -141,14 +141,30 @@ def train(args):
     
     # 加载数据
     print(f"\n加载数据: {args.data_dir}")
-    train_loader, val_loader = get_dataloaders(
-        data_dir=args.data_dir,
-        batch_size=args.batch_size,
-        image_size=(args.image_size, args.image_size),
-        train_ratio=0.7,  # 7:3 划分
-        num_workers=args.num_workers,
-        seed=args.seed
-    )
+    print(f"类别数: {args.num_classes}")
+    
+    # 根据类别数选择数据加载器
+    if args.num_classes > 1:
+        # 多分类任务
+        train_loader, val_loader = get_multiclass_dataloaders(
+            data_dir=args.data_dir,
+            batch_size=args.batch_size,
+            image_size=(args.image_size, args.image_size),
+            train_ratio=0.7,  # 7:3 划分
+            num_workers=args.num_workers,
+            seed=args.seed,
+            num_classes=args.num_classes
+        )
+    else:
+        # 二分类任务
+        train_loader, val_loader = get_dataloaders(
+            data_dir=args.data_dir,
+            batch_size=args.batch_size,
+            image_size=(args.image_size, args.image_size),
+            train_ratio=0.7,  # 7:3 划分
+            num_workers=args.num_workers,
+            seed=args.seed
+        )
     
     # 创建模型
     print(f"\n创建模型: {args.model}")

@@ -176,15 +176,60 @@ class MetricTracker:
         更新指标
         
         Args:
-            pred: 预测值 (B, 1, H, W)
+            pred: 预测值 (B, C, H, W) - C=1为二分类，C>1为多分类
             target: 目标值 (B, 1, H, W)
-            threshold: 二值化阈值
+            threshold: 二值化阈值（仅用于二分类）
         """
         batch_size = pred.shape[0]
+        num_classes = pred.shape[1]
         
-        self.dice_sum += dice_score(pred, target, threshold).item() * batch_size
-        self.iou_sum += iou_score(pred, target, threshold).item() * batch_size
-        self.acc_sum += pixel_accuracy(pred, target, threshold).item() * batch_size
+        if num_classes > 1:
+            # 多分类情况：将pred转换为类别索引，计算整体准确率
+            pred_classes = torch.argmax(pred, dim=1, keepdim=True)  # (B, 1, H, W)
+            target_classes = target.long()  # (B, 1, H, W)
+            
+            # 计算像素准确率
+            correct = (pred_classes == target_classes).sum().float()
+            total = target_classes.numel()
+            acc = correct / total
+            
+            # 计算多分类Dice和IoU（对每个类别取平均）
+            dice_sum = 0.0
+            iou_sum = 0.0
+            valid_classes = 0
+            
+            for c in range(num_classes):
+                pred_c = (pred_classes == c).float()
+                target_c = (target_classes == c).float()
+                
+                # 只计算存在该类别的情况
+                if target_c.sum() > 0 or pred_c.sum() > 0:
+                    intersection = (pred_c * target_c).sum()
+                    union = pred_c.sum() + target_c.sum()
+                    
+                    dice_c = (2.0 * intersection + 1e-5) / (union + 1e-5)
+                    iou_c = (intersection + 1e-5) / (union - intersection + 1e-5)
+                    
+                    dice_sum += dice_c.item()
+                    iou_sum += iou_c.item()
+                    valid_classes += 1
+            
+            if valid_classes > 0:
+                dice = dice_sum / valid_classes
+                iou = iou_sum / valid_classes
+            else:
+                dice = 0.0
+                iou = 0.0
+            
+            self.dice_sum += dice * batch_size
+            self.iou_sum += iou * batch_size
+            self.acc_sum += acc.item() * batch_size
+        else:
+            # 二分类情况：使用原有逻辑
+            self.dice_sum += dice_score(pred, target, threshold).item() * batch_size
+            self.iou_sum += iou_score(pred, target, threshold).item() * batch_size
+            self.acc_sum += pixel_accuracy(pred, target, threshold).item() * batch_size
+        
         self.count += batch_size
     
     def get_metrics(self) -> dict:
